@@ -88,7 +88,7 @@ export function convertToGatewayMessages(
           text?: string;
           toolCallId?: string;
           toolName?: string;
-          args?: string;
+          input?: unknown;
         }>;
 
         let textContent = "";
@@ -109,7 +109,10 @@ export function convertToGatewayMessages(
                 type: "function",
                 function: {
                   name: part.toolName,
-                  arguments: part.args ?? "{}",
+                  arguments:
+                    typeof part.input === "string"
+                      ? part.input
+                      : JSON.stringify(part.input ?? {}),
                 },
               });
               break;

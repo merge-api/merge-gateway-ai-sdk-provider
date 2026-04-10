@@ -14,6 +14,7 @@ import {
   combineHeaders,
   createEventSourceResponseHandler,
   createJsonResponseHandler,
+  generateId,
   postJsonToApi,
 } from "@ai-sdk/provider-utils";
 import type { MergeGatewayChatConfig } from "../merge-gateway-provider.js";
@@ -34,6 +35,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
   readonly provider: string;
   readonly modelId: string;
   readonly defaultObjectGenerationMode = "tool" as const;
+  readonly supportedUrls: Record<string, RegExp[]> = {};
 
   readonly settings: MergeGatewayChatSettings;
   private readonly config: MergeGatewayChatConfig;
@@ -63,7 +65,8 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     seed,
     providerOptions,
   }: LanguageModelV3CallOptions) {
-    const gatewayOptions = (providerOptions?.mergeGateway ?? {}) as MergeGatewayProviderOptions;
+    const gatewayOptions = (providerOptions?.mergeGateway ??
+      {}) as MergeGatewayProviderOptions;
 
     const baseArgs: Record<string, unknown> = {
       model: this.modelId,
@@ -123,21 +126,29 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
           (tool): tool is LanguageModelV3FunctionTool =>
             tool.type === "function",
         )
-        .map((tool) => ({
-          type: "function" as const,
-          function: {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.inputSchema,
-          },
-        }));
+        .map((tool) => {
+          // Ensure parameters have "type": "object" — some Zod v4 schemas omit it,
+          // which causes OpenAI to reject the tool definition
+          const params = tool.inputSchema as Record<string, unknown> | undefined;
+          const normalizedParams =
+            params && "properties" in params && !("type" in params)
+              ? { type: "object", ...params }
+              : params;
+
+          return {
+            type: "function" as const,
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: normalizedParams,
+            },
+          };
+        });
 
       return {
         ...baseArgs,
         tools: mappedTools,
-        tool_choice: toolChoice
-          ? getToolChoice(toolChoice)
-          : undefined,
+        tool_choice: toolChoice ? getToolChoice(toolChoice) : undefined,
       };
     }
 
@@ -153,7 +164,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     warnings: Array<SharedV3Warning>;
     providerMetadata?: SharedV3ProviderMetadata;
     request?: { body?: unknown };
-    response?: { headers?: SharedV3Headers; body?: unknown };
+    response?: { id?: string; modelId?: string; timestamp?: Date; headers?: SharedV3Headers; body?: unknown };
   }> {
     const args = this.getArgs(options);
 
@@ -173,7 +184,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     if (!choice) {
       return {
         content: [],
-        finishReason: "unknown",
+        finishReason: mapFinishReason(null),
         usage: emptyUsage(),
         warnings: [],
         request: { body: args },
@@ -207,7 +218,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
           type: "tool-call",
           toolCallId: tc.id,
           toolName: tc.function.name,
-          args: tc.function.arguments,
+          input: tc.function.arguments,
         });
       }
     }
@@ -216,7 +227,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
       ? computeTokenUsage(response.usage)
       : emptyUsage();
 
-    // Build provider metadata (includes routing info if requested)
+    // Build provider metadata
     const providerMetadata: SharedV3ProviderMetadata = {
       mergeGateway: {
         responseId: response.id,
@@ -231,6 +242,8 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
       providerMetadata,
       request: { body: args },
       response: {
+        id: response.id,
+        modelId: response.model,
         headers: responseHeaders,
         body: response,
       },
@@ -241,9 +254,8 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<{
     stream: ReadableStream<LanguageModelV3StreamPart>;
-    warnings: Array<SharedV3Warning>;
     request?: { body?: unknown };
-    response?: { headers?: SharedV3Headers; body?: unknown };
+    response?: { headers?: SharedV3Headers };
   }> {
     const args = this.getArgs(options);
 
@@ -264,13 +276,23 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
       number,
       { id: string; name: string; arguments: string }
     > = new Map();
-    let finishReason: LanguageModelV3FinishReason = "unknown";
+    let finishReason: LanguageModelV3FinishReason = mapFinishReason(null);
     let usage: LanguageModelV3Usage = emptyUsage();
+
+    // Generate stable IDs for text and reasoning parts
+    const textId = generateId();
+    const reasoningId = generateId();
+    let textStarted = false;
+    let reasoningStarted = false;
 
     return {
       stream: response.pipeThrough(
         new TransformStream<
-          { success: boolean; value?: Record<string, unknown>; error?: unknown },
+          {
+            success: boolean;
+            value?: Record<string, unknown>;
+            error?: unknown;
+          },
           LanguageModelV3StreamPart
         >({
           transform(chunk, controller) {
@@ -280,11 +302,36 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
             }
 
             const value = chunk.value as Record<string, unknown>;
-            const choices = value.choices as Array<Record<string, unknown>> | undefined;
+
+            // Handle error chunks from the backend
+            if ("error" in value) {
+              const errorObj = value.error as Record<string, unknown>;
+              controller.enqueue({
+                type: "error",
+                error: new Error(
+                  (errorObj?.message as string) ?? "Unknown error",
+                ),
+              });
+              return;
+            }
+
+            // Emit stream-start on first chunk
+            if (!textStarted && !reasoningStarted) {
+              controller.enqueue({
+                type: "stream-start",
+                warnings: [],
+              });
+            }
+
+            const choices = value.choices as
+              | Array<Record<string, unknown>>
+              | undefined;
             if (!choices || choices.length === 0) return;
 
             const choice = choices[0] as Record<string, unknown>;
-            const delta = choice.delta as Record<string, unknown> | undefined;
+            const delta = choice.delta as
+              | Record<string, unknown>
+              | undefined;
 
             if (!delta) return;
 
@@ -296,21 +343,50 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
               });
             }
 
-            // Text content
-            const textContent = delta.content as string | null | undefined;
-            if (textContent) {
+            // Thinking/reasoning content
+            const thinkingContent = delta.thinking as
+              | string
+              | null
+              | undefined;
+            if (thinkingContent) {
+              if (!reasoningStarted) {
+                reasoningStarted = true;
+                controller.enqueue({
+                  type: "reasoning-start",
+                  id: reasoningId,
+                });
+              }
               controller.enqueue({
-                type: "text-delta",
-                textDelta: textContent,
+                type: "reasoning-delta",
+                id: reasoningId,
+                delta: thinkingContent,
               });
             }
 
-            // Thinking/reasoning content
-            const thinkingContent = delta.thinking as string | null | undefined;
-            if (thinkingContent) {
+            // Text content
+            const textContent = delta.content as
+              | string
+              | null
+              | undefined;
+            if (textContent) {
+              if (reasoningStarted) {
+                reasoningStarted = false;
+                controller.enqueue({
+                  type: "reasoning-end",
+                  id: reasoningId,
+                });
+              }
+              if (!textStarted) {
+                textStarted = true;
+                controller.enqueue({
+                  type: "text-start",
+                  id: textId,
+                });
+              }
               controller.enqueue({
-                type: "reasoning",
-                text: thinkingContent,
+                type: "text-delta",
+                id: textId,
+                delta: textContent,
               });
             }
 
@@ -322,54 +398,83 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
             if (deltaToolCalls) {
               for (const tc of deltaToolCalls) {
                 const index = (tc.index as number) ?? 0;
-                const tcFunction = tc.function as Record<string, unknown> | undefined;
+                const tcFunction = tc.function as
+                  | Record<string, unknown>
+                  | undefined;
 
                 if (!toolCalls.has(index)) {
                   // New tool call
-                  const id = (tc.id as string) ?? "";
-                  const name = tcFunction?.name as string ?? "";
+                  const id = (tc.id as string) ?? generateId();
+                  const name = (tcFunction?.name as string) ?? "";
                   toolCalls.set(index, { id, name, arguments: "" });
 
+                  // Close text if open
+                  if (textStarted) {
+                    textStarted = false;
+                    controller.enqueue({ type: "text-end", id: textId });
+                  }
+
                   controller.enqueue({
-                    type: "tool-call-streaming-start",
-                    toolCallId: id,
+                    type: "tool-input-start",
+                    id,
                     toolName: name,
                   });
                 }
 
                 // Accumulate arguments
-                const argsDelta = tcFunction?.arguments as string | undefined;
+                const argsDelta = tcFunction?.arguments as
+                  | string
+                  | undefined;
                 if (argsDelta) {
                   const existing = toolCalls.get(index)!;
                   existing.arguments += argsDelta;
 
                   controller.enqueue({
-                    type: "tool-call-delta",
-                    toolCallId: existing.id,
-                    argsTextDelta: argsDelta,
+                    type: "tool-input-delta",
+                    id: existing.id,
+                    delta: argsDelta,
                   });
                 }
               }
             }
 
             // Finish reason
-            const chunkFinishReason = choice.finish_reason as string | null | undefined;
+            const chunkFinishReason = choice.finish_reason as
+              | string
+              | null
+              | undefined;
             if (chunkFinishReason) {
               finishReason = mapFinishReason(chunkFinishReason);
 
-              // Emit complete tool calls
+              // Close open text/reasoning parts
+              if (reasoningStarted) {
+                controller.enqueue({
+                  type: "reasoning-end",
+                  id: reasoningId,
+                });
+              }
+              if (textStarted) {
+                controller.enqueue({ type: "text-end", id: textId });
+              }
+
+              // Close tool calls and emit complete tool-call events
               for (const [, tc] of toolCalls) {
+                controller.enqueue({
+                  type: "tool-input-end",
+                  id: tc.id,
+                });
                 controller.enqueue({
                   type: "tool-call",
                   toolCallId: tc.id,
                   toolName: tc.name,
-                  args: tc.arguments,
+                  input: tc.arguments,
                 });
               }
             }
 
             // Usage (typically on the final chunk)
-            const chunkUsage = (value.usage ?? (choice as Record<string, unknown>).usage) as
+            const chunkUsage = (value.usage ??
+              (choice as Record<string, unknown>).usage) as
               | Record<string, number>
               | null
               | undefined;
@@ -386,7 +491,6 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
           },
         }),
       ),
-      warnings: [],
       request: { body: args },
       response: {
         headers: responseHeaders,

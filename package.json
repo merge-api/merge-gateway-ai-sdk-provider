@@ -7,9 +7,9 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     }
   },
   "files": [
@@ -43,16 +43,16 @@
   },
   "homepage": "https://github.com/merge-api/merge-gateway-ai-sdk-provider",
   "peerDependencies": {
-    "@ai-sdk/provider": ">=1.1.0",
+    "@ai-sdk/provider": ">=3.0.0",
     "@ai-sdk/provider-utils": ">=4.0.0"
   },
   "devDependencies": {
-    "@ai-sdk/provider": "1.1.6",
-    "@ai-sdk/provider-utils": "4.0.4",
-    "ai": "4.3.16",
+    "@ai-sdk/provider": "3.0.8",
+    "@ai-sdk/provider-utils": "4.0.23",
+    "ai": "6.0.157",
     "typescript": "~5.7.0",
     "vitest": "3.0.0",
-    "tsup": "8.4.0",
-    "zod": "3.24.0"
+    "tsup": "8.5.1",
+    "zod": "4.3.6"
   }
 }

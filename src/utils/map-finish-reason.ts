@@ -1,23 +1,26 @@
 import type { LanguageModelV3FinishReason } from "@ai-sdk/provider";
 
 /**
- * Map Gateway/OpenAI finish reasons to AI SDK finish reasons.
+ * Map Gateway/OpenAI finish reasons to AI SDK V3 finish reasons.
+ * V3 uses { unified, raw } format instead of plain strings.
  */
 export function mapFinishReason(
   reason: string | null | undefined,
 ): LanguageModelV3FinishReason {
+  const raw = reason ?? undefined;
+
   switch (reason) {
     case "stop":
-      return "stop";
+      return { unified: "stop", raw };
     case "length":
     case "max_tokens":
-      return "length";
+      return { unified: "length", raw };
     case "tool_calls":
     case "tool_use":
-      return "tool-calls";
+      return { unified: "tool-calls", raw };
     case "content_filter":
-      return "content-filter";
+      return { unified: "content-filter", raw };
     default:
-      return "unknown";
+      return { unified: "other", raw };
   }
 }
