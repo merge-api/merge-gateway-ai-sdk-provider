@@ -1,0 +1,58 @@
+{
+  "name": "@merge-api/ai-sdk-provider",
+  "version": "0.1.0",
+  "description": "Merge Gateway provider for the Vercel AI SDK",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "merge",
+    "gateway",
+    "ai",
+    "ai-sdk",
+    "vercel",
+    "llm",
+    "openai",
+    "anthropic",
+    "provider"
+  ],
+  "author": "Merge <support@merge.dev>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/merge-api/merge-gateway-ai-sdk-provider"
+  },
+  "homepage": "https://github.com/merge-api/merge-gateway-ai-sdk-provider",
+  "peerDependencies": {
+    "@ai-sdk/provider": ">=1.1.0",
+    "@ai-sdk/provider-utils": ">=4.0.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "1.1.6",
+    "@ai-sdk/provider-utils": "4.0.4",
+    "ai": "4.3.16",
+    "typescript": "~5.7.0",
+    "vitest": "3.0.0",
+    "tsup": "8.4.0",
+    "zod": "3.24.0"
+  }
+}
