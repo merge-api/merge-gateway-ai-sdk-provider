@@ -67,7 +67,7 @@ export type MergeGatewayEmbeddingConfig = {
  *
  * @example
  * ```ts
- * import { createMergeGateway } from "@merge-api/ai-sdk-provider";
+ * import { createMergeGateway } from "merge-gateway-ai-sdk-provider";
  * import { generateText } from "ai";
  *
  * const gateway = createMergeGateway({

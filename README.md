@@ -1,17 +1,17 @@
-# @merge-api/ai-sdk-provider
+# merge-gateway-ai-sdk-provider
 
 Merge Gateway provider for the [Vercel AI SDK](https://ai-sdk.dev). Route requests to OpenAI, Anthropic, Google, and more through a single provider with built-in failover, intelligent routing, and cost optimization.
 
 ## Installation
 
 ```bash
-npm install @merge-api/ai-sdk-provider ai
+npm install merge-gateway-ai-sdk-provider ai
 ```
 
 ## Quick start
 
 ```typescript
-import { createMergeGateway } from "@merge-api/ai-sdk-provider";
+import { createMergeGateway } from "merge-gateway-ai-sdk-provider";
 import { generateText } from "ai";
 
 const gateway = createMergeGateway({
@@ -30,10 +30,10 @@ console.log(text);
 
 ### Native provider (recommended)
 
-Install `@merge-api/ai-sdk-provider` for typed Gateway features:
+Install `merge-gateway-ai-sdk-provider` for typed Gateway features:
 
 ```typescript
-import { createMergeGateway } from "@merge-api/ai-sdk-provider";
+import { createMergeGateway } from "merge-gateway-ai-sdk-provider";
 
 const gateway = createMergeGateway({
   apiKey: process.env.MERGE_GATEWAY_API_KEY,

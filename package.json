@@ -1,5 +1,5 @@
 {
-  "name": "@merge-api/ai-sdk-provider",
+  "name": "merge-gateway-ai-sdk-provider",
   "version": "0.1.0",
   "description": "Merge Gateway provider for the Vercel AI SDK",
   "main": "dist/index.js",
