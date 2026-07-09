@@ -1,6 +1,6 @@
 {
   "name": "merge-gateway-ai-sdk-provider",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Merge Gateway provider for the Vercel AI SDK",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

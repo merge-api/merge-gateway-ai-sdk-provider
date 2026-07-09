@@ -253,4 +253,108 @@ describe("convertToGatewayMessages", () => {
     const result = convertToGatewayMessages(prompt);
     expect(result[0].content).toBe("The answer is 42.");
   });
+
+  // Regression: AI SDK v5+ (LanguageModelV2/V3) moved the tool result from a
+  // flat `result` field to `output: { type, value }`. Reading only `result`
+  // silently produced an empty tool result ('""'), so the model never saw tool
+  // output (e.g. OpenCode: "the directory is empty" despite a successful `ls`).
+  describe("tool-result output shape (AI SDK v5+)", () => {
+    it("reads output.type=text", () => {
+      const prompt: LanguageModelV3Prompt = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "c1",
+              toolName: "bash",
+              output: { type: "text", value: "fizzbuzz.py\nopencode.json\n" },
+            },
+          ],
+        },
+      ];
+      expect(convertToGatewayMessages(prompt)[0].content).toBe(
+        "fizzbuzz.py\nopencode.json\n",
+      );
+    });
+
+    it("reads output.type=json", () => {
+      const prompt: LanguageModelV3Prompt = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "c1",
+              toolName: "get_weather",
+              output: { type: "json", value: { temp: 72, unit: "F" } },
+            },
+          ],
+        },
+      ];
+      expect(convertToGatewayMessages(prompt)[0].content).toBe(
+        '{"temp":72,"unit":"F"}',
+      );
+    });
+
+    it("reads output.type=error-text", () => {
+      const prompt: LanguageModelV3Prompt = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "c1",
+              toolName: "bash",
+              output: { type: "error-text", value: "command not found" },
+            },
+          ],
+        },
+      ];
+      expect(convertToGatewayMessages(prompt)[0].content).toBe(
+        "command not found",
+      );
+    });
+
+    it("reads output.type=content (text parts joined)", () => {
+      const prompt: LanguageModelV3Prompt = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "c1",
+              toolName: "reader",
+              output: {
+                type: "content",
+                value: [
+                  { type: "text", text: "line 1" },
+                  { type: "text", text: "line 2" },
+                ],
+              },
+            },
+          ],
+        },
+      ];
+      expect(convertToGatewayMessages(prompt)[0].content).toBe("line 1\nline 2");
+    });
+
+    it("still supports the legacy v4 `result` field", () => {
+      const prompt: LanguageModelV3Prompt = [
+        {
+          role: "tool",
+          content: [
+            {
+              // legacy AI SDK v4 shape, retained for backward compat
+              type: "tool-result",
+              toolCallId: "c1",
+              toolName: "echo",
+              result: "hello world",
+            },
+          ],
+        },
+      ];
+      expect(convertToGatewayMessages(prompt)[0].content).toBe("hello world");
+    });
+  });
 });
