@@ -21,6 +21,7 @@ import type { MergeGatewayChatConfig } from "../merge-gateway-provider.js";
 import type { MergeGatewayChatSettings } from "../types/merge-gateway-chat-settings.js";
 import type { MergeGatewayProviderOptions } from "../types/merge-gateway-provider-options.js";
 import { computeTokenUsage, emptyUsage } from "../utils/compute-token-usage.js";
+import { ensureObjectType } from "../utils/ensure-object-type.js";
 import { mapFinishReason } from "../utils/map-finish-reason.js";
 import { mergeGatewayFailedResponseHandler } from "../schemas/error-response.js";
 import { convertToGatewayMessages } from "./convert-to-gateway-messages.js";
@@ -34,7 +35,6 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
   readonly specificationVersion = "v3" as const;
   readonly provider: string;
   readonly modelId: string;
-  readonly defaultObjectGenerationMode = "tool" as const;
   readonly supportedUrls: Record<string, RegExp[]> = {};
 
   readonly settings: MergeGatewayChatSettings;
@@ -56,6 +56,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     maxOutputTokens,
     temperature,
     topP,
+    topK,
     frequencyPenalty,
     presencePenalty,
     stopSequences,
@@ -64,9 +65,28 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     toolChoice,
     seed,
     providerOptions,
-  }: LanguageModelV3CallOptions) {
+  }: LanguageModelV3CallOptions): {
+    args: Record<string, unknown>;
+    warnings: Array<SharedV3Warning>;
+  } {
     const gatewayOptions = (providerOptions?.mergeGateway ??
       {}) as MergeGatewayProviderOptions;
+    const warnings: Array<SharedV3Warning> = [];
+
+    if (topK != null) {
+      warnings.push({
+        type: "unsupported",
+        feature: "topK",
+        details: "the gateway chat surface does not accept top_k",
+      });
+    }
+
+    // Per-call providerOptions win over the model-level setting; default true
+    // preserves deterministic conformance where the provider supports it.
+    const strict =
+      gatewayOptions.strictJsonSchema ??
+      this.settings.strictJsonSchema ??
+      true;
 
     const baseArgs: Record<string, unknown> = {
       model: this.modelId,
@@ -81,15 +101,18 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
       stop: stopSequences,
       seed,
 
-      // Response format
+      // Response format. The schema passes through untouched apart from the
+      // Zod-v4 root `type: "object"` fix-up — no flattening, no strict-mode
+      // rewriting; the gateway and provider enforce (and loudly reject) from
+      // the original shape.
       response_format:
         responseFormat?.type === "json"
           ? responseFormat.schema != null
             ? {
                 type: "json_schema",
                 json_schema: {
-                  schema: responseFormat.schema,
-                  strict: true,
+                  schema: ensureObjectType(responseFormat.schema),
+                  strict,
                   name: responseFormat.name ?? "response",
                   ...(responseFormat.description && {
                     description: responseFormat.description,
@@ -121,38 +144,39 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     };
 
     if (tools && tools.length > 0) {
-      const mappedTools = tools
-        .filter(
-          (tool): tool is LanguageModelV3FunctionTool =>
-            tool.type === "function",
-        )
-        .map((tool) => {
-          // Ensure parameters have "type": "object" — some Zod v4 schemas omit it,
-          // which causes OpenAI to reject the tool definition
-          const params = tool.inputSchema as Record<string, unknown> | undefined;
-          const normalizedParams =
-            params && "properties" in params && !("type" in params)
-              ? { type: "object", ...params }
-              : params;
-
-          return {
-            type: "function" as const,
-            function: {
-              name: tool.name,
-              description: tool.description,
-              parameters: normalizedParams,
-            },
-          };
-        });
+      const functionTools = tools.filter(
+        (tool): tool is LanguageModelV3FunctionTool =>
+          tool.type === "function",
+      );
+      for (const tool of tools) {
+        if (tool.type !== "function") {
+          warnings.push({
+            type: "unsupported",
+            feature: `tool type '${tool.type}'`,
+            details: "only function tools are forwarded to the gateway",
+          });
+        }
+      }
+      const mappedTools = functionTools.map((tool) => ({
+        type: "function" as const,
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: ensureObjectType(tool.inputSchema),
+        },
+      }));
 
       return {
-        ...baseArgs,
-        tools: mappedTools,
-        tool_choice: toolChoice ? getToolChoice(toolChoice) : undefined,
+        args: {
+          ...baseArgs,
+          tools: mappedTools,
+          tool_choice: toolChoice ? getToolChoice(toolChoice) : undefined,
+        },
+        warnings,
       };
     }
 
-    return baseArgs;
+    return { args: baseArgs, warnings };
   }
 
   async doGenerate(
@@ -166,7 +190,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     request?: { body?: unknown };
     response?: { id?: string; modelId?: string; timestamp?: Date; headers?: SharedV3Headers; body?: unknown };
   }> {
-    const args = this.getArgs(options);
+    const { args, warnings } = this.getArgs(options);
 
     const { value: response, responseHeaders } = await postJsonToApi({
       url: this.config.url({ path: "/chat/completions" }),
@@ -186,7 +210,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
         content: [],
         finishReason: mapFinishReason(null),
         usage: emptyUsage(),
-        warnings: [],
+        warnings,
         request: { body: args },
         response: { headers: responseHeaders, body: response },
       };
@@ -238,7 +262,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
       content,
       finishReason: mapFinishReason(choice.finish_reason),
       usage,
-      warnings: [],
+      warnings,
       providerMetadata,
       request: { body: args },
       response: {
@@ -257,7 +281,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
     request?: { body?: unknown };
     response?: { headers?: SharedV3Headers };
   }> {
-    const args = this.getArgs(options);
+    const { args, warnings } = this.getArgs(options);
 
     const { value: response, responseHeaders } = await postJsonToApi({
       url: this.config.url({ path: "/chat/completions" }),
@@ -295,6 +319,12 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
           },
           LanguageModelV3StreamPart
         >({
+          start(controller) {
+            // Exactly one stream-start, up front, carrying the request-time
+            // warnings — previously this was emitted (repeatedly) inside the
+            // first-content check and never for tool-only streams.
+            controller.enqueue({ type: "stream-start", warnings });
+          },
           transform(chunk, controller) {
             if (!chunk.success) {
               controller.enqueue({ type: "error", error: chunk.error });
@@ -313,14 +343,6 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
                 ),
               });
               return;
-            }
-
-            // Emit stream-start on first chunk
-            if (!textStarted && !reasoningStarted) {
-              controller.enqueue({
-                type: "stream-start",
-                warnings: [],
-              });
             }
 
             const choices = value.choices as

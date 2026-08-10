@@ -285,3 +285,135 @@ describe("MergeGatewayChatLanguageModel.doGenerate", () => {
     );
   });
 });
+
+describe("MergeGatewayChatLanguageModel responseFormat", () => {
+  const NESTED_SCHEMA = {
+    type: "object",
+    properties: {
+      person: { $ref: "#/$defs/Person" },
+      note: { anyOf: [{ type: "string" }, { type: "null" }] },
+    },
+    required: ["person"],
+    additionalProperties: false,
+    $defs: {
+      Person: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+    },
+  };
+
+  async function dispatchedBody(
+    options: Record<string, unknown>,
+    settings: Record<string, unknown> = {},
+  ) {
+    const fetchMock = mockJsonResponse(BASIC_COMPLETION_RESPONSE);
+    const config: MergeGatewayChatConfig = {
+      provider: "merge-gateway.chat",
+      headers: () => ({ Authorization: "Bearer test-key" }),
+      url: ({ path }) => `https://test-gateway.example.com${path}`,
+      fetch: fetchMock,
+    };
+    const model = new MergeGatewayChatLanguageModel(
+      "openai/gpt-4o",
+      settings,
+      config,
+    );
+    await model.doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "Hi" }] }],
+      inputFormat: "prompt",
+      ...options,
+    } as never);
+    const fetchCall = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    return JSON.parse(fetchCall[1].body);
+  }
+
+  it("maps schema-less json responseFormat to json_object", async () => {
+    const body = await dispatchedBody({ responseFormat: { type: "json" } });
+    expect(body.response_format).toEqual({ type: "json_object" });
+  });
+
+  it("passes a nested schema through byte-identical with strict true by default", async () => {
+    const body = await dispatchedBody({
+      responseFormat: {
+        type: "json",
+        schema: NESTED_SCHEMA,
+        name: "person_reply",
+        description: "a person",
+      },
+    });
+    expect(body.response_format).toEqual({
+      type: "json_schema",
+      json_schema: {
+        schema: NESTED_SCHEMA,
+        strict: true,
+        name: "person_reply",
+        description: "a person",
+      },
+    });
+  });
+
+  it("providerOptions strictJsonSchema false wins over the default", async () => {
+    const body = await dispatchedBody({
+      responseFormat: { type: "json", schema: NESTED_SCHEMA },
+      providerOptions: { mergeGateway: { strictJsonSchema: false } },
+    });
+    expect(body.response_format.json_schema.strict).toBe(false);
+  });
+
+  it("settings-level strictJsonSchema false applies, per-call option wins", async () => {
+    const fromSettings = await dispatchedBody(
+      { responseFormat: { type: "json", schema: NESTED_SCHEMA } },
+      { strictJsonSchema: false },
+    );
+    expect(fromSettings.response_format.json_schema.strict).toBe(false);
+
+    const perCallWins = await dispatchedBody(
+      {
+        responseFormat: { type: "json", schema: NESTED_SCHEMA },
+        providerOptions: { mergeGateway: { strictJsonSchema: true } },
+      },
+      { strictJsonSchema: false },
+    );
+    expect(perCallWins.response_format.json_schema.strict).toBe(true);
+  });
+
+  it("prepends type object to a Zod-v4-style schema missing the root type", async () => {
+    const body = await dispatchedBody({
+      responseFormat: {
+        type: "json",
+        schema: { properties: { a: { type: "string" } }, required: ["a"] },
+      },
+    });
+    expect(body.response_format.json_schema.schema).toEqual({
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: ["a"],
+    });
+  });
+
+  it("defaults the schema name to response", async () => {
+    const body = await dispatchedBody({
+      responseFormat: { type: "json", schema: NESTED_SCHEMA },
+    });
+    expect(body.response_format.json_schema.name).toBe("response");
+  });
+
+  it("warns on topK instead of silently dropping it", async () => {
+    const fetchMock = mockJsonResponse(BASIC_COMPLETION_RESPONSE);
+    const model = createTestModel(fetchMock);
+    const result = await model.doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "Hi" }] }],
+      inputFormat: "prompt",
+      topK: 40,
+    } as never);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ type: "unsupported", feature: "topK" }),
+    ]);
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body,
+    );
+    expect(body).not.toHaveProperty("top_k");
+  });
+});
