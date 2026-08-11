@@ -195,6 +195,25 @@ describe("MergeGatewayChatLanguageModel.doGenerate", () => {
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 5000 });
   });
 
+  it("sends named reasoning effort", async () => {
+    const fetchMock = mockJsonResponse(BASIC_COMPLETION_RESPONSE);
+    const model = createTestModel(fetchMock);
+
+    await model.doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "Hi" }] }],
+      inputFormat: "prompt",
+      providerOptions: {
+        mergeGateway: {
+          reasoningEffort: "high",
+        },
+      },
+    });
+
+    const fetchCall = fetchMock.mock.calls[0];
+    const body = JSON.parse(fetchCall[1].body);
+    expect(body.reasoning_effort).toBe("high");
+  });
+
   it("sends tools in OpenAI format", async () => {
     const fetchMock = mockJsonResponse(TOOL_CALL_RESPONSE);
     const model = createTestModel(fetchMock);
