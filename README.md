@@ -170,7 +170,7 @@ Select a named reasoning level for models that expose effort controls:
 
 ```typescript
 const { text } = await generateText({
-  model: gateway("openai/gpt-5.6"),
+  model: gateway("openai/gpt-5.6-sol"),
   prompt: "Solve this carefully.",
   providerOptions: {
     mergeGateway: {
