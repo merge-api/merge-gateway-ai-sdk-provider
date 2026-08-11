@@ -21,6 +21,16 @@ export interface MergeGatewayProviderOptions {
   /** Include routing decision metadata in the response. */
   includeRoutingMetadata?: boolean;
 
+  /**
+   * Controls the `strict` flag on `json_schema` structured output.
+   *
+   * Defaults to `true` for deterministic schema conformance where the
+   * provider supports it. Set to `false` for schemas that OpenAI-style
+   * strict mode rejects (optional fields, unions/anyOf, open objects).
+   * Overrides the model-level `strictJsonSchema` setting per call.
+   */
+  strictJsonSchema?: boolean;
+
   /** Enable extended thinking with a token budget. */
   thinking?: {
     type: "enabled" | "disabled";

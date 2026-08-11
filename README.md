@@ -211,6 +211,10 @@ const { text, toolCalls } = await generateText({
 
 ## Structured output
 
+`generateObject` / `streamObject` map to the gateway's native `json_schema`
+structured output. Schemas pass through untouched — nested objects, `$defs`,
+`anyOf`, and optional fields all reach the provider as you wrote them.
+
 ```typescript
 import { generateObject } from "ai";
 import { z } from "zod";
@@ -225,6 +229,48 @@ const { object } = await generateObject({
   }),
 });
 ```
+
+### Controlling `strict`
+
+The `strict` flag defaults to `true`. Schemas with optional fields, unions
+(`anyOf`), or open objects are rejected by OpenAI-style strict mode — turn it
+off per call (or per model via `gateway(modelId, { strictJsonSchema: false })`):
+
+```typescript
+const { object } = await generateObject({
+  model: gateway("openai/gpt-4o"),
+  prompt: "Invent a person with an email or phone contact",
+  schema: z.object({
+    name: z.string(),
+    age: z.number().optional(),
+    contact: z.union([
+      z.object({ kind: z.literal("email"), address: z.string() }),
+      z.object({ kind: z.literal("phone"), number: z.string() }),
+    ]),
+  }),
+  providerOptions: { mergeGateway: { strictJsonSchema: false } },
+});
+```
+
+If a routed model can't honor the schema, the gateway fails loudly with a
+`400 unsupported_params` (surfaced as an `APICallError`) — never a silent
+fallback to best-effort JSON.
+
+## AI SDK v5
+
+AI SDK v5 (`ai@5`) uses provider spec v2 and cannot load the default entry
+point. Import from `merge-gateway-ai-sdk-provider/v5` instead — same
+implementation and options, wrapped in a v2 adapter:
+
+```typescript
+import { createMergeGateway } from "merge-gateway-ai-sdk-provider/v5";
+```
+
+| AI SDK major | Import |
+|--------------|--------|
+| `ai@6` | `merge-gateway-ai-sdk-provider` |
+| `ai@5` | `merge-gateway-ai-sdk-provider/v5` |
+| `ai@4` | not supported — use the [URL shim](#url-shim-zero-install) |
 
 ## API reference
 
@@ -259,6 +305,7 @@ Passed via `providerOptions.mergeGateway`:
 | `vendors` | `string[]` | Ordered vendor preference list |
 | `includeRoutingMetadata` | `boolean` | Include routing metadata in response |
 | `thinking` | `{ type: "enabled" \| "disabled"; budgetTokens: number }` | Extended thinking config |
+| `strictJsonSchema` | `boolean` | `strict` flag for `json_schema` structured output (default `true`; set `false` for schemas with optional fields/unions) |
 
 ## License
 

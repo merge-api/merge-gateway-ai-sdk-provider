@@ -1,15 +1,37 @@
 {
   "name": "merge-gateway-ai-sdk-provider",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Merge Gateway provider for the Vercel AI SDK",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./v5": {
+      "import": {
+        "types": "./dist/v5/index.d.mts",
+        "default": "./dist/v5/index.mjs"
+      },
+      "require": {
+        "types": "./dist/v5/index.d.ts",
+        "default": "./dist/v5/index.js"
+      }
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "v5": [
+        "./dist/v5/index.d.ts"
+      ]
     }
   },
   "files": [
@@ -43,8 +65,10 @@
   },
   "homepage": "https://github.com/merge-api/merge-gateway-ai-sdk-provider",
   "peerDependencies": {
-    "@ai-sdk/provider": ">=3.0.0",
-    "@ai-sdk/provider-utils": ">=4.0.0"
+    "@ai-sdk/provider": ">=2.0.0"
+  },
+  "dependencies": {
+    "@ai-sdk/provider-utils": "^4.0.23"
   },
   "devDependencies": {
     "@ai-sdk/provider": "3.0.8",
