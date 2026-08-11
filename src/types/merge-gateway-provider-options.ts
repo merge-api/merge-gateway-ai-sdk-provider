@@ -31,6 +31,16 @@ export interface MergeGatewayProviderOptions {
    */
   strictJsonSchema?: boolean;
 
+  /** Set the model's named reasoning effort. */
+  reasoningEffort?:
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | "max";
+
   /** Enable extended thinking with a token budget. */
   thinking?: {
     type: "enabled" | "disabled";

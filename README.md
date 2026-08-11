@@ -164,6 +164,22 @@ const { text } = await generateText({
 });
 ```
 
+### Reasoning effort
+
+Select a named reasoning level for models that expose effort controls:
+
+```typescript
+const { text } = await generateText({
+  model: gateway("openai/gpt-5.6-sol"),
+  prompt: "Solve this carefully.",
+  providerOptions: {
+    mergeGateway: {
+      reasoningEffort: "high",
+    },
+  },
+});
+```
+
 ### Routing metadata
 
 Get details about routing decisions, cost, and latency:
@@ -304,6 +320,7 @@ Passed via `providerOptions.mergeGateway`:
 | `vendor` | `string` | Single vendor preference |
 | `vendors` | `string[]` | Ordered vendor preference list |
 | `includeRoutingMetadata` | `boolean` | Include routing metadata in response |
+| `reasoningEffort` | `"none" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max"` | Named reasoning effort level |
 | `thinking` | `{ type: "enabled" \| "disabled"; budgetTokens: number }` | Extended thinking config |
 | `strictJsonSchema` | `boolean` | `strict` flag for `json_schema` structured output (default `true`; set `false` for schemas with optional fields/unions) |
 
