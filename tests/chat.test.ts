@@ -416,4 +416,82 @@ describe("MergeGatewayChatLanguageModel responseFormat", () => {
     );
     expect(body).not.toHaveProperty("top_k");
   });
+  it("sends image and document attachments in the dispatched body", async () => {
+    const fetchMock = mockJsonResponse(BASIC_COMPLETION_RESPONSE);
+    const model = createTestModel(fetchMock);
+    const result = await model.doGenerate({
+      prompt: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in these?" },
+            {
+              type: "file",
+              mediaType: "image/png",
+              data: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+            },
+            {
+              type: "file",
+              mediaType: "application/pdf",
+              filename: "report.pdf",
+              data: "JVBERi0xLjQK",
+            },
+          ],
+        },
+      ],
+      inputFormat: "prompt",
+    } as never);
+
+    // Assert on the body we DISPATCH, not on the prompt we were handed: the
+    // bug this pins made the request succeed with the attachments missing.
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body,
+    );
+    const parts = body.messages[0].content;
+    expect(parts.map((p: { type: string }) => p.type)).toEqual([
+      "text",
+      "image_url",
+      "file",
+    ]);
+    expect(parts[1].image_url.url).toBe("data:image/png;base64,iVBORw==");
+    expect(parts[2].file).toEqual({
+      file_data: "data:application/pdf;base64,JVBERi0xLjQK",
+      format: "application/pdf",
+      filename: "report.pdf",
+    });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("surfaces a warning for an attachment it cannot forward", async () => {
+    const fetchMock = mockJsonResponse(BASIC_COMPLETION_RESPONSE);
+    const model = createTestModel(fetchMock);
+    const result = await model.doGenerate({
+      prompt: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Read this" },
+            {
+              type: "file",
+              mediaType: "application/pdf",
+              filename: "ledger.pdf",
+              data: { type: "reference", reference: { openai: "file-1" } },
+            },
+          ],
+        },
+      ],
+      inputFormat: "prompt",
+    } as never);
+
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        type: "unsupported",
+        feature: "file attachment",
+      }),
+    ]);
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body,
+    );
+    expect(body.messages[0].content).toHaveLength(1);
+  });
 });
