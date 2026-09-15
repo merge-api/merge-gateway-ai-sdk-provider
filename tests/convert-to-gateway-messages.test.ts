@@ -605,3 +605,127 @@ describe("convertToGatewayMessages: file parts", () => {
     );
   });
 });
+
+describe("convertToGatewayMessages: prompt-cache hints", () => {
+  const EPHEMERAL = { type: "ephemeral" };
+
+  it("carries a message-level cache hint onto a system message", () => {
+    const result = convertToGatewayMessages([
+      {
+        role: "system",
+        content: "Long standing instructions.",
+        providerOptions: { anthropic: { cacheControl: EPHEMERAL } },
+      },
+    ] as unknown as LanguageModelV3Prompt);
+    expect(result[0]).toEqual({
+      role: "system",
+      content: "Long standing instructions.",
+      cache_control: EPHEMERAL,
+    });
+  });
+
+  it("promotes a part-level hint when a single text part is unwrapped", () => {
+    const result = convertToGatewayMessages([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "Hello",
+            providerOptions: { anthropic: { cacheControl: EPHEMERAL } },
+          },
+        ],
+      },
+    ] as unknown as LanguageModelV3Prompt);
+    expect(result[0]).toEqual({
+      role: "user",
+      content: "Hello",
+      cache_control: EPHEMERAL,
+    });
+  });
+
+  it("puts a part-level hint on the content block it belongs to", () => {
+    const result = convertToGatewayMessages([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "Cache this preamble",
+            providerOptions: { anthropic: { cacheControl: EPHEMERAL } },
+          },
+          { type: "text", text: "but not this" },
+        ],
+      },
+    ] as unknown as LanguageModelV3Prompt);
+    expect(result[0].content).toEqual([
+      { type: "text", text: "Cache this preamble", cache_control: EPHEMERAL },
+      { type: "text", text: "but not this" },
+    ]);
+  });
+
+  it("caches an attachment block", () => {
+    const result = convertToGatewayMessages([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Summarize" },
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "contract.pdf",
+            data: "JVBERi0xLjQK",
+            providerOptions: { anthropic: { cacheControl: EPHEMERAL } },
+          },
+        ],
+      },
+    ] as unknown as LanguageModelV3Prompt);
+    const parts = result[0].content as Array<Record<string, any>>;
+    expect(parts[1].type).toBe("file");
+    expect(parts[1].cache_control).toEqual(EPHEMERAL);
+  });
+
+  it("reads the snake_case and openrouter spellings too", () => {
+    const result = convertToGatewayMessages([
+      {
+        role: "user",
+        content: "ignored",
+        providerOptions: { openrouter: { cache_control: EPHEMERAL } },
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "prior turn",
+            providerOptions: { mergeGateway: { cacheControl: EPHEMERAL } },
+          },
+        ],
+      },
+    ] as unknown as LanguageModelV3Prompt);
+    expect(result[0].cache_control).toEqual(EPHEMERAL);
+    expect(result[1]).toEqual({
+      role: "assistant",
+      content: "prior turn",
+      cache_control: EPHEMERAL,
+    });
+  });
+
+  it("leaves messages untouched when no hint is present", () => {
+    const result = convertToGatewayMessages([
+      { role: "user", content: [{ type: "text", text: "Hi" }] },
+    ] as unknown as LanguageModelV3Prompt);
+    expect(result[0]).toEqual({ role: "user", content: "Hi" });
+  });
+
+  it("ignores provider options that carry no cache hint", () => {
+    const result = convertToGatewayMessages([
+      {
+        role: "system",
+        content: "Hi",
+        providerOptions: { anthropic: { somethingElse: true } },
+      },
+    ] as unknown as LanguageModelV3Prompt);
+    expect(result[0]).toEqual({ role: "system", content: "Hi" });
+  });
+});

@@ -229,6 +229,29 @@ const { text, warnings } = await generateText({ /* ... */ });
 // warnings: [{ type: "unsupported", feature: "file attachment", details: "..." }]
 ```
 
+## Prompt caching
+
+Cache markers ride on `providerOptions`, either on a content part or on the
+message as a whole, and are translated into the gateway's `cache_control`:
+
+```typescript
+const { text } = await generateText({
+  model: gateway("anthropic/claude-sonnet-5"),
+  messages: [
+    {
+      role: "system",
+      content: "...long stable instructions...",
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    },
+    { role: "user", content: "What changed in section 4?" },
+  ],
+});
+```
+
+The `anthropic`, `openrouter`, and `mergeGateway` namespaces are all read, in
+either the `cacheControl` or `cache_control` spelling. Caching applies on
+`explicit` routes; the response reports cache activity in its usage.
+
 ## Tool calling
 
 Tools work the same as with any AI SDK provider:

@@ -7,6 +7,7 @@ type ChatMessage = {
   name?: string;
   tool_calls?: Array<Record<string, unknown>>;
   tool_call_id?: string;
+  cache_control?: Record<string, unknown>;
 };
 
 /**
@@ -74,6 +75,44 @@ function extractToolResultContent(part: {
   return "";
 }
 
+/** Anything that can carry AI SDK `providerOptions` — a message or a part. */
+type WithProviderOptions = {
+  providerOptions?: Record<string, unknown>;
+  provider_options?: Record<string, unknown>;
+};
+
+/**
+ * Prompt-cache hints ride on `providerOptions` in the AI SDK
+ * (`{ anthropic: { cacheControl: { type: "ephemeral" } } }`), which this
+ * converter used to drop on the floor along with the rest of the part's
+ * provider options — so caching a long document or system prompt through this
+ * provider quietly did nothing.
+ *
+ * The gateway reads a `cache_control` key on the message or the content block
+ * (its own OpenAI-compat shape), so translate rather than pass through.
+ */
+function cacheControlFrom(
+  source: WithProviderOptions | undefined,
+): Record<string, unknown> | undefined {
+  const options = source?.providerOptions ?? source?.provider_options;
+  if (!options || typeof options !== "object") {
+    return undefined;
+  }
+  for (const family of ["anthropic", "openrouter", "mergeGateway"]) {
+    const familyOptions = options[family];
+    if (!familyOptions || typeof familyOptions !== "object") {
+      continue;
+    }
+    const cacheControl =
+      (familyOptions as Record<string, unknown>).cacheControl ??
+      (familyOptions as Record<string, unknown>).cache_control;
+    if (cacheControl && typeof cacheControl === "object") {
+      return cacheControl as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
 /**
  * A file part as it can actually arrive, across every prompt spec this package
  * is used with. The field names moved between generations and the provider is
@@ -86,7 +125,7 @@ function extractToolResultContent(part: {
  *   `{ type: 'data' | 'url' | 'reference' | 'text' }` in V4. A sibling `url`
  *   on the part itself only ever existed in the v1-era shape.
  */
-type FilePartLike = {
+type FilePartLike = WithProviderOptions & {
   type: string;
   text?: string;
   filename?: string;
@@ -361,31 +400,55 @@ export function convertToGatewayMessages(
     warnings.push(warning);
   };
 
-  for (const { role, content } of prompt) {
+  for (const message of prompt) {
+    const { role, content } = message;
+    const messageCacheControl = cacheControlFrom(message as WithProviderOptions);
+
     switch (role) {
       case "system": {
-        messages.push({ role: "system", content: content as string });
+        messages.push({
+          role: "system",
+          content: content as string,
+          ...(messageCacheControl && { cache_control: messageCacheControl }),
+        });
         break;
       }
 
       case "user": {
         const parts = content as Array<FilePartLike>;
 
-        // Unwrap single text part to plain string
+        // Unwrap single text part to plain string. A cache hint on that part
+        // has nowhere to sit once the content is a string, so promote it to
+        // the message, which the gateway honours the same way.
         if (parts.length === 1 && parts[0].type === "text") {
-          messages.push({ role: "user", content: parts[0].text! });
+          const cacheControl = messageCacheControl ?? cacheControlFrom(parts[0]);
+          messages.push({
+            role: "user",
+            content: parts[0].text!,
+            ...(cacheControl && { cache_control: cacheControl }),
+          });
           break;
         }
 
         const contentParts: Array<Record<string, unknown>> = [];
         for (const part of parts) {
           switch (part.type) {
-            case "text":
-              contentParts.push({ type: "text", text: part.text });
+            case "text": {
+              const cacheControl = cacheControlFrom(part);
+              contentParts.push({
+                type: "text",
+                text: part.text,
+                ...(cacheControl && { cache_control: cacheControl }),
+              });
               break;
+            }
             case "file": {
               const block = fileContentPart(part, warn);
               if (block) {
+                const cacheControl = cacheControlFrom(part);
+                if (cacheControl) {
+                  block.cache_control = cacheControl;
+                }
                 contentParts.push(block);
               }
               break;
@@ -398,18 +461,24 @@ export function convertToGatewayMessages(
               });
           }
         }
-        messages.push({ role: "user", content: contentParts });
+        messages.push({
+          role: "user",
+          content: contentParts,
+          ...(messageCacheControl && { cache_control: messageCacheControl }),
+        });
         break;
       }
 
       case "assistant": {
-        const parts = content as Array<{
-          type: string;
-          text?: string;
-          toolCallId?: string;
-          toolName?: string;
-          input?: unknown;
-        }>;
+        const parts = content as Array<
+          WithProviderOptions & {
+            type: string;
+            text?: string;
+            toolCallId?: string;
+            toolName?: string;
+            input?: unknown;
+          }
+        >;
 
         let textContent = "";
         const toolCalls: Array<Record<string, unknown>> = [];
@@ -447,9 +516,16 @@ export function convertToGatewayMessages(
           }
         }
 
+        // Assistant text parts collapse into one string, so a part-level hint
+        // has no block to sit on; the last one wins at the message level.
+        const assistantCacheControl =
+          messageCacheControl ??
+          parts.map((part) => cacheControlFrom(part)).filter(Boolean).pop();
+
         const msg: ChatMessage = {
           role: "assistant",
           content: textContent || null,
+          ...(assistantCacheControl && { cache_control: assistantCacheControl }),
         };
         if (toolCalls.length > 0) {
           msg.tool_calls = toolCalls;
