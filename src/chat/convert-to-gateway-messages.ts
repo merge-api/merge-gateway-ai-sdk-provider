@@ -1,4 +1,5 @@
-import type { LanguageModelV3Prompt } from "@ai-sdk/provider";
+import type { LanguageModelV3Prompt, SharedV3Warning } from "@ai-sdk/provider";
+import { convertUint8ArrayToBase64 } from "@ai-sdk/provider-utils";
 
 type ChatMessage = {
   role: string;
@@ -74,13 +75,291 @@ function extractToolResultContent(part: {
 }
 
 /**
+ * A file part as it can actually arrive, across every prompt spec this package
+ * is used with. The field names moved between generations and the provider is
+ * handed whatever the installed `@ai-sdk/provider` produces:
+ *
+ * - media type: `mediaType` in V2/V3/V4; `mimeType` only in the v1-era shape
+ *   (which is what this converter originally — and wrongly — read, so every
+ *   file part, images included, fell through and was dropped silently).
+ * - data: `Uint8Array | string | URL` in V2/V3; a tagged union
+ *   `{ type: 'data' | 'url' | 'reference' | 'text' }` in V4. A sibling `url`
+ *   on the part itself only ever existed in the v1-era shape.
+ */
+type FilePartLike = {
+  type: string;
+  text?: string;
+  filename?: string;
+  data?: unknown;
+  mediaType?: string;
+  mimeType?: string;
+  url?: string;
+};
+
+/** Where the bytes live once the spec differences are resolved away. */
+type FileSource =
+  | { kind: "url"; value: string }
+  | { kind: "base64"; value: string }
+  | { kind: "text"; value: string }
+  | { kind: "unsupported"; reason: string };
+
+/** Base64 prefixes of the file signatures we can identify without decoding. */
+const BASE64_SIGNATURES: Array<[string, string]> = [
+  ["iVBORw0KGgo", "image/png"],
+  ["/9j/", "image/jpeg"],
+  ["R0lGODdh", "image/gif"],
+  ["R0lGODlh", "image/gif"],
+  ["JVBERi0", "application/pdf"],
+];
+
+const EXTENSION_MEDIA_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  csv: "text/csv",
+  json: "application/json",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+};
+
+function isFullMediaType(mediaType: string | undefined): mediaType is string {
+  return (
+    typeof mediaType === "string" &&
+    mediaType.includes("/") &&
+    !mediaType.endsWith("/*")
+  );
+}
+
+/** Media type of a `data:` URI, or "" when it carries none. */
+function mediaTypeFromDataUri(value: string): string {
+  const head = value.slice(5).split(";", 1)[0] ?? "";
+  return head.includes("/") ? head : "";
+}
+
+/**
+ * Resolve a concrete `type/subtype`. V3 allows wildcards (`image/*`) and V4
+ * allows a bare top-level segment (`image`), neither of which can label a
+ * `data:` URI, so fall back to the file signature and then the filename.
+ */
+function resolveMediaType(
+  part: FilePartLike,
+  source: FileSource,
+): string | undefined {
+  const declared = part.mediaType ?? part.mimeType;
+  if (isFullMediaType(declared)) {
+    return declared;
+  }
+  if (source.kind === "url" && source.value.startsWith("data:")) {
+    const fromUri = mediaTypeFromDataUri(source.value);
+    if (fromUri) {
+      return fromUri;
+    }
+  }
+  if (source.kind === "base64") {
+    for (const [prefix, mediaType] of BASE64_SIGNATURES) {
+      if (source.value.startsWith(prefix)) {
+        return mediaType;
+      }
+    }
+  }
+  const extension = part.filename?.split(".").pop()?.toLowerCase();
+  if (extension && EXTENSION_MEDIA_TYPES[extension]) {
+    return EXTENSION_MEDIA_TYPES[extension];
+  }
+  return undefined;
+}
+
+/** Top-level IANA segment (`image`, `audio`, …) of whatever we could resolve. */
+function topLevelType(
+  part: FilePartLike,
+  resolved: string | undefined,
+): string {
+  const declared = part.mediaType ?? part.mimeType;
+  return (resolved ?? declared ?? "").split("/")[0]?.toLowerCase() ?? "";
+}
+
+function rawDataToSource(data: unknown): FileSource {
+  if (data instanceof URL) {
+    return { kind: "url", value: data.toString() };
+  }
+  if (data instanceof Uint8Array) {
+    return { kind: "base64", value: convertUint8ArrayToBase64(data) };
+  }
+  if (data instanceof ArrayBuffer) {
+    return { kind: "base64", value: convertUint8ArrayToBase64(new Uint8Array(data)) };
+  }
+  if (ArrayBuffer.isView(data)) {
+    const view = data as ArrayBufferView;
+    return {
+      kind: "base64",
+      value: convertUint8ArrayToBase64(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    };
+  }
+  if (typeof data === "string") {
+    if (
+      data.startsWith("http://") ||
+      data.startsWith("https://") ||
+      data.startsWith("data:")
+    ) {
+      // A `data:` URI is already a complete, labelled payload — forward as-is.
+      return { kind: "url", value: data };
+    }
+    return { kind: "base64", value: data };
+  }
+  return { kind: "unsupported", reason: "file data of an unrecognized type" };
+}
+
+/** Collapse every spec's `data` shape down to a URL, base64, or inline text. */
+function resolveFileSource(part: FilePartLike): FileSource {
+  const data = part.data;
+
+  // AI SDK V4 tagged union.
+  if (
+    data !== null &&
+    typeof data === "object" &&
+    !(data instanceof Uint8Array) &&
+    !(data instanceof URL) &&
+    !(data instanceof ArrayBuffer) &&
+    !ArrayBuffer.isView(data) &&
+    "type" in (data as Record<string, unknown>)
+  ) {
+    const tagged = data as Record<string, unknown>;
+    switch (tagged.type) {
+      case "url":
+        return { kind: "url", value: String(tagged.url) };
+      case "data":
+        return rawDataToSource(tagged.data);
+      case "text":
+        return { kind: "text", value: String(tagged.text) };
+      case "reference":
+        return {
+          kind: "unsupported",
+          reason:
+            "a provider file reference, which the gateway cannot resolve — send the file data or a URL instead",
+        };
+      default:
+        return {
+          kind: "unsupported",
+          reason: `file data of type "${String(tagged.type)}"`,
+        };
+    }
+  }
+
+  return rawDataToSource(data ?? part.url);
+}
+
+/**
+ * Convert one file part to the Chat Completions block the Gateway expects.
+ *
+ * Images become `image_url`; audio becomes `input_audio`; everything else
+ * (PDF, Office documents, video, …) becomes litellm's unified `file` block,
+ * which the gateway translates per vendor — the same vehicle its own
+ * document/video content blocks use. Nothing is dropped without a warning.
+ */
+function fileContentPart(
+  part: FilePartLike,
+  warn: (warning: SharedV3Warning) => void,
+): Record<string, unknown> | undefined {
+  const source = resolveFileSource(part);
+  const label = part.filename ?? part.mediaType ?? part.mimeType ?? "file";
+
+  if (source.kind === "unsupported") {
+    warn({
+      type: "unsupported",
+      feature: "file attachment",
+      details: `"${label}" was not sent: ${source.reason}.`,
+    });
+    return undefined;
+  }
+
+  if (source.kind === "text") {
+    // V4 inline-text documents have no binary payload; the text itself is the
+    // content, so send it as text rather than an empty file block.
+    return {
+      type: "text",
+      text: part.filename ? `${part.filename}:\n${source.value}` : source.value,
+    };
+  }
+
+  const mediaType = resolveMediaType(part, source);
+  const topLevel = topLevelType(part, mediaType);
+
+  if (source.kind === "base64" && mediaType === undefined) {
+    warn({
+      type: "unsupported",
+      feature: "file attachment",
+      details:
+        `"${label}" was not sent: its media type is ${
+          part.mediaType ?? part.mimeType ?? "missing"
+        }, which is not a concrete "type/subtype". ` +
+        "Pass a full media type (or a filename) so the file can be labelled.",
+    });
+    return undefined;
+  }
+
+  const url =
+    source.kind === "url"
+      ? source.value
+      : `data:${mediaType};base64,${source.value}`;
+
+  if (topLevel === "image") {
+    return { type: "image_url", image_url: { url } };
+  }
+
+  if (topLevel === "audio" && source.kind === "base64") {
+    // litellm's `input_audio` takes bare base64 plus a bare format ("wav"),
+    // not a data URI. URL-sourced audio falls through to the `file` block.
+    return {
+      type: "input_audio",
+      input_audio: {
+        data: source.value,
+        format: (mediaType ?? "").split("/")[1]?.replace("mpeg", "mp3") ?? "",
+      },
+    };
+  }
+
+  const file: Record<string, unknown> = { file_data: url };
+  if (mediaType) {
+    file.format = mediaType;
+  }
+  if (part.filename) {
+    file.filename = part.filename;
+  }
+  return { type: "file", file };
+}
+
+/**
  * Convert AI SDK LanguageModelV3Prompt to OpenAI chat message format,
  * which is what the Gateway /v1/ai-sdk/chat/completions endpoint expects.
+ *
+ * `warnings` collects anything that could not be forwarded, so a part the
+ * gateway cannot carry surfaces on the call result instead of vanishing.
  */
 export function convertToGatewayMessages(
   prompt: LanguageModelV3Prompt,
+  warnings: Array<SharedV3Warning> = [],
 ): ChatMessage[] {
   const messages: ChatMessage[] = [];
+  const warn = (warning: SharedV3Warning) => {
+    warnings.push(warning);
+  };
 
   for (const { role, content } of prompt) {
     switch (role) {
@@ -90,13 +369,7 @@ export function convertToGatewayMessages(
       }
 
       case "user": {
-        const parts = content as Array<{
-          type: string;
-          text?: string;
-          data?: string | Uint8Array;
-          mimeType?: string;
-          url?: string;
-        }>;
+        const parts = content as Array<FilePartLike>;
 
         // Unwrap single text part to plain string
         if (parts.length === 1 && parts[0].type === "text") {
@@ -111,36 +384,18 @@ export function convertToGatewayMessages(
               contentParts.push({ type: "text", text: part.text });
               break;
             case "file": {
-              // Image content — convert to OpenAI image_url format
-              if (part.mimeType?.startsWith("image/")) {
-                let url: string;
-                if (typeof part.data === "string") {
-                  // Could be a URL or base64
-                  if (
-                    part.data.startsWith("http://") ||
-                    part.data.startsWith("https://")
-                  ) {
-                    url = part.data;
-                  } else {
-                    url = `data:${part.mimeType};base64,${part.data}`;
-                  }
-                } else if (part.url) {
-                  url = part.url;
-                } else {
-                  // Uint8Array — convert to base64
-                  const bytes = part.data as Uint8Array;
-                  const binary = Array.from(bytes)
-                    .map((b) => String.fromCharCode(b))
-                    .join("");
-                  url = `data:${part.mimeType};base64,${btoa(binary)}`;
-                }
-                contentParts.push({
-                  type: "image_url",
-                  image_url: { url },
-                });
+              const block = fileContentPart(part, warn);
+              if (block) {
+                contentParts.push(block);
               }
               break;
             }
+            default:
+              warn({
+                type: "unsupported",
+                feature: `user content part "${part.type}"`,
+                details: "the part was not included in the request.",
+              });
           }
         }
         messages.push({ role: "user", content: contentParts });
@@ -181,6 +436,14 @@ export function convertToGatewayMessages(
                 },
               });
               break;
+            default:
+              // Assistant-side files (generated images, for example) have no
+              // Chat Completions representation on the way back in. Say so.
+              warn({
+                type: "unsupported",
+                feature: `assistant content part "${part.type}"`,
+                details: "the part was not included in the request.",
+              });
           }
         }
 

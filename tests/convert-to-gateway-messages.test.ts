@@ -358,3 +358,250 @@ describe("convertToGatewayMessages", () => {
     });
   });
 });
+
+describe("convertToGatewayMessages: file parts", () => {
+  const PNG_BYTES = new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+  ]);
+  const PNG_BASE64 = "iVBORw0KGgoAAAAN";
+
+  function userParts(part: Record<string, unknown>, warnings: any[] = []) {
+    const result = convertToGatewayMessages(
+      [
+        {
+          role: "user",
+          content: [{ type: "text", text: "look" }, part as any],
+        },
+      ] as unknown as LanguageModelV3Prompt,
+      warnings,
+    );
+    return result[0].content as Array<Record<string, any>>;
+  }
+
+  it("forwards an image file part addressed by mediaType (V2/V3 spelling)", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "image/png",
+      data: PNG_BASE64,
+    });
+    expect(parts[1]).toEqual({
+      type: "image_url",
+      image_url: { url: `data:image/png;base64,${PNG_BASE64}` },
+    });
+  });
+
+  it("forwards image bytes as a base64 data URI", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "image/png",
+      data: PNG_BYTES,
+    });
+    expect(parts[1].image_url.url).toBe(
+      "data:image/png;base64,iVBORw0KGgoAAAAN",
+    );
+  });
+
+  it("forwards a URL instance (the V3 data shape) untouched", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "image/jpeg",
+      data: new URL("https://example.com/cat.jpg"),
+    });
+    expect(parts[1]).toEqual({
+      type: "image_url",
+      image_url: { url: "https://example.com/cat.jpg" },
+    });
+  });
+
+  it("forwards a data: URI unchanged rather than re-wrapping it", () => {
+    const dataUri = "data:image/webp;base64,UklGRh4AAABXRUJQ";
+    const parts = userParts({ type: "file", mediaType: "image/webp", data: dataUri });
+    expect(parts[1].image_url.url).toBe(dataUri);
+  });
+
+  it("forwards a PDF as the gateway's unified file block", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "application/pdf",
+      filename: "invoice.pdf",
+      data: "JVBERi0xLjQK",
+    });
+    expect(parts[1]).toEqual({
+      type: "file",
+      file: {
+        file_data: "data:application/pdf;base64,JVBERi0xLjQK",
+        format: "application/pdf",
+        filename: "invoice.pdf",
+      },
+    });
+  });
+
+  it("forwards an Office document as a file block", () => {
+    const mediaType =
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const parts = userParts({
+      type: "file",
+      mediaType,
+      filename: "spec.docx",
+      data: "UEsDBBQABgAI",
+    });
+    expect(parts[1].type).toBe("file");
+    expect(parts[1].file.format).toBe(mediaType);
+    expect(parts[1].file.file_data).toBe(`data:${mediaType};base64,UEsDBBQABgAI`);
+  });
+
+  it("forwards a document URL without inventing a data URI", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "application/pdf",
+      data: "https://example.com/report.pdf",
+    });
+    expect(parts[1].file.file_data).toBe("https://example.com/report.pdf");
+  });
+
+  it("forwards audio as input_audio with a bare format", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "audio/mpeg",
+      data: "SUQzBAAAAAAA",
+    });
+    expect(parts[1]).toEqual({
+      type: "input_audio",
+      input_audio: { data: "SUQzBAAAAAAA", format: "mp3" },
+    });
+  });
+
+  it("forwards video as a file block", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "video/mp4",
+      data: "AAAAIGZ0eXA=",
+    });
+    expect(parts[1].type).toBe("file");
+    expect(parts[1].file.format).toBe("video/mp4");
+  });
+
+  it("still accepts the legacy mimeType spelling", () => {
+    const parts = userParts({
+      type: "file",
+      mimeType: "image/jpeg",
+      data: "https://example.com/cat.jpg",
+    });
+    expect(parts[1]).toEqual({
+      type: "image_url",
+      image_url: { url: "https://example.com/cat.jpg" },
+    });
+  });
+
+  describe("AI SDK V4 tagged data union", () => {
+    it("reads { type: 'url' }", () => {
+      const parts = userParts({
+        type: "file",
+        mediaType: "image/png",
+        data: { type: "url", url: "https://example.com/a.png" },
+      });
+      expect(parts[1].image_url.url).toBe("https://example.com/a.png");
+    });
+
+    it("reads { type: 'data' } bytes", () => {
+      const parts = userParts({
+        type: "file",
+        mediaType: "application/pdf",
+        data: { type: "data", data: "JVBERi0xLjQK" },
+      });
+      expect(parts[1].file.file_data).toBe(
+        "data:application/pdf;base64,JVBERi0xLjQK",
+      );
+    });
+
+    it("inlines { type: 'text' } documents as text", () => {
+      const parts = userParts({
+        type: "file",
+        mediaType: "text/plain",
+        filename: "notes.txt",
+        data: { type: "text", text: "hello from a file" },
+      });
+      expect(parts[1]).toEqual({
+        type: "text",
+        text: "notes.txt:\nhello from a file",
+      });
+    });
+
+    it("warns instead of dropping { type: 'reference' } silently", () => {
+      const warnings: any[] = [];
+      const parts = userParts(
+        {
+          type: "file",
+          mediaType: "application/pdf",
+          filename: "ref.pdf",
+          data: { type: "reference", reference: { openai: "file-123" } },
+        },
+        warnings,
+      );
+      expect(parts).toHaveLength(1);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].type).toBe("unsupported");
+      expect(warnings[0].details).toContain("ref.pdf");
+    });
+
+    it("resolves a top-level-only media type from the file signature", () => {
+      const parts = userParts({
+        type: "file",
+        mediaType: "image",
+        data: { type: "data", data: PNG_BYTES },
+      });
+      expect(parts[1].image_url.url).toBe(
+        "data:image/png;base64,iVBORw0KGgoAAAAN",
+      );
+    });
+  });
+
+  it("resolves an image/* wildcard from the file signature", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "image/*",
+      data: PNG_BASE64,
+    });
+    expect(parts[1].image_url.url).toBe(`data:image/png;base64,${PNG_BASE64}`);
+  });
+
+  it("resolves an unknown media type from the filename", () => {
+    const parts = userParts({
+      type: "file",
+      mediaType: "application/*",
+      filename: "deck.pptx",
+      data: "UEsDBBQABgAI",
+    });
+    expect(parts[1].file.format).toBe(
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    );
+  });
+
+  it("warns when a media type cannot be resolved at all", () => {
+    const warnings: any[] = [];
+    const parts = userParts(
+      { type: "file", data: "c29tZSBieXRlcw==" },
+      warnings,
+    );
+    expect(parts).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      type: "unsupported",
+      feature: "file attachment",
+    });
+  });
+
+  it("warns on an unknown user content part instead of dropping it", () => {
+    const warnings: any[] = [];
+    userParts({ type: "something-new", value: 1 } as any, warnings);
+    expect(warnings[0]).toMatchObject({ type: "unsupported" });
+    expect(warnings[0].feature).toContain("something-new");
+  });
+
+  it("encodes a multi-megabyte attachment without blowing the stack", () => {
+    const big = new Uint8Array(3 * 1024 * 1024).fill(0x41);
+    const parts = userParts({ type: "file", mediaType: "application/pdf", data: big });
+    expect(parts[1].file.file_data.startsWith("data:application/pdf;base64,QUFB")).toBe(
+      true,
+    );
+  });
+});

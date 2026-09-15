@@ -90,7 +90,7 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
 
     const baseArgs: Record<string, unknown> = {
       model: this.modelId,
-      messages: convertToGatewayMessages(prompt),
+      messages: convertToGatewayMessages(prompt, warnings),
 
       // Standard parameters
       max_tokens: maxOutputTokens,

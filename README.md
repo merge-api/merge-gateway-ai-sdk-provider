@@ -186,6 +186,49 @@ console.log(routing?.cost_usd);      // 0.003
 console.log(routing?.strategy);      // "fallback"
 ```
 
+## Attachments
+
+File parts are forwarded to the model. Images become OpenAI `image_url` blocks,
+audio becomes `input_audio`, and everything else (PDF, Office documents, video)
+becomes the gateway's unified `file` block, which it translates into each
+vendor's own document format.
+
+```typescript
+import { readFileSync } from "node:fs";
+
+const { text } = await generateText({
+  model: gateway("openai/gpt-4o"),
+  messages: [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Summarize this contract." },
+        {
+          type: "file",
+          mediaType: "application/pdf",
+          filename: "contract.pdf",
+          data: readFileSync("contract.pdf"),
+        },
+      ],
+    },
+  ],
+});
+```
+
+`data` may be bytes, a base64 string, a `data:` URI, or a URL, and the AI SDK v6
+tagged forms (`{ type: "data" | "url" | "text" }`) are read as well. Provider
+file references (`{ type: "reference" }`) cannot be resolved by the gateway.
+
+Whether the model can *read* a given media type still depends on the route: the
+gateway forwards the attachment, and a vendor that does not accept it returns an
+error. Anything this provider cannot forward is reported in `warnings` on the
+result rather than dropped silently:
+
+```typescript
+const { text, warnings } = await generateText({ /* ... */ });
+// warnings: [{ type: "unsupported", feature: "file attachment", details: "..." }]
+```
+
 ## Tool calling
 
 Tools work the same as with any AI SDK provider:
