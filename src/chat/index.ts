@@ -132,6 +132,9 @@ export class MergeGatewayChatLanguageModel implements LanguageModelV3 {
       ...(gatewayOptions.includeRoutingMetadata && {
         include_routing_metadata: true,
       }),
+      ...(gatewayOptions.reasoningEffort !== undefined && {
+        reasoning_effort: gatewayOptions.reasoningEffort,
+      }),
       ...(gatewayOptions.thinking && {
         thinking: {
           type: gatewayOptions.thinking.type,
